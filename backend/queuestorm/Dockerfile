@@ -2,6 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Reliable judge/runtime default: deterministic rules only. Set USE_LLM=1 and
+# provide Gemini keys only if you have stable quota.
+ENV USE_LLM=0
+
 # Install dependencies first (better layer caching)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -20,7 +20,14 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from .schemas import TicketRequest, TicketResponse, TransactionEntry
-from .investigator import match_transaction, classify
+from .investigator import (
+    match_transaction,
+    investigate,
+    department_for,
+    refine_evidence_for_case,
+    human_review_for,
+)
+from .llm import classify_with_llm
 from .replies import build_outputs
 from .safety import enforce_customer_reply_safety, detect_injection
 
@@ -51,20 +58,59 @@ def analyze_ticket(req: TicketRequest):
 
     history = req.transaction_history
 
-    # 1. Evidence reasoning: pick the relevant transaction + verdict.
-    relevant_id, verdict = match_transaction(req.complaint, history)
+    # 1. Claim-evidence reasoning: detect the customer claim first, then verify it.
+    hypothesis = investigate(req)
+    relevant_id = hypothesis.relevant_transaction_id
+    verdict = hypothesis.evidence_verdict
     relevant_txn = next(
         (t for t in history if t.transaction_id == relevant_id), None
     )
 
-    # 2. Classification + routing + severity + escalation.
-    case_type, department, severity, human_review = classify(req, relevant_txn)
+    # 2. Classification + severity + escalation.
+    #    Deterministic rules first — they are the guaranteed fallback.
+    case_type = hypothesis.case_type
+    severity = hypothesis.severity
+    human_review = hypothesis.human_review_required
 
-    # Escalate whenever evidence is unclear or inconsistent.
-    if verdict in ("inconsistent", "insufficient_data") and case_type not in (
+    # 2b. Optional LLM refinement. May ONLY override case_type / severity. It
+    #     never touches relevant_id, evidence_verdict, or department, and returns
+    #     None when disabled or on any error.
+    llm_result = classify_with_llm(req.complaint, req.language)
+    llm_used = llm_result is not None
+    if llm_used:
+        case_type = llm_result["case_type"]
+        severity = llm_result["severity"]
+
+    # 2c. Evidence semantics depend on the final case_type. For example,
+    #     phishing reports usually should not attach to an unrelated transaction,
+    #     and duplicate-payment claims need two matching completed payments.
+    if llm_used:
+        base_id, base_verdict = match_transaction(req.complaint, history)
+        relevant_id, verdict = refine_evidence_for_case(
+            req, case_type, base_id, base_verdict
+        )
+        relevant_txn = next(
+            (t for t in history if t.transaction_id == relevant_id), None
+        )
+        human_review = human_review_for(case_type, severity, verdict, relevant_txn)
+
+    # 2d. Department is a deterministic function of the FINAL case_type (taxonomy
+    #     source of truth), applied identically whether the LLM or the rules
+    #     chose the case_type — so routing is never guessed and never mis-routed.
+    department = department_for(case_type)
+
+    # Escalate contradicted claims, but let low-risk ambiguous cases ask for
+    # clarification instead of forcing manual review.
+    if verdict == "inconsistent" and case_type not in (
         "other",
         "refund_request",
         "merchant_settlement_delay",
+    ):
+        human_review = True
+    elif verdict == "insufficient_data" and case_type in (
+        "payment_failed",
+        "duplicate_payment",
+        "agent_cash_in_issue",
     ):
         human_review = True
 
@@ -83,11 +129,17 @@ def analyze_ticket(req: TicketRequest):
     reply = enforce_customer_reply_safety(reply, language=req.language or "en")
 
     # 5. Confidence + reason codes (optional fields, but useful signal).
-    confidence = _confidence(verdict, relevant_txn, case_type)
+    confidence = _confidence(verdict, relevant_txn, case_type) if llm_used else hypothesis.confidence
     reason_codes = [case_type]
-    if relevant_txn:
+    for code in hypothesis.reason_codes:
+        if code not in reason_codes:
+            reason_codes.append(code)
+    if relevant_txn and "transaction_match" not in reason_codes:
         reason_codes.append("transaction_match")
-    reason_codes.append(f"evidence_{verdict}")
+    evidence_code = f"evidence_{verdict}"
+    if evidence_code not in reason_codes:
+        reason_codes.append(evidence_code)
+    reason_codes.append("llm_classified" if llm_used else "rule_classified")
     if injection:
         reason_codes.append("prompt_injection_ignored")
 

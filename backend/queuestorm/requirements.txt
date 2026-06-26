@@ -1,4 +1,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.4
+pydantic==2.13.4
 httpx==0.28.1
+
+# Optional LLM layer (only imported when USE_LLM=1 and Gemini keys are set).
+google-genai==2.10.0

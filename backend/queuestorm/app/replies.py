@@ -5,8 +5,8 @@ Template-based by default (fast, free, safe). If you add an LLM, generate the
 draft here and STILL pass customer_reply through safety.enforce_customer_reply_safety
 before returning it.
 
-The Bangla branch demonstrates language-matched replies (see SAMPLE-07): if the
-input language is 'bn', reply in Bangla with a Bangla credential-safety reminder.
+The Bangla branch demonstrates language-matched replies: if the input language
+is 'bn', reply in Bangla with a Bangla credential-safety reminder.
 """
 
 from typing import Optional
