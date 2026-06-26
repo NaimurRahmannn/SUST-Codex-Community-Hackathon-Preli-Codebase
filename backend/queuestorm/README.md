@@ -9,6 +9,10 @@ the routing department, and a safe customer reply.
 The core system is deterministic and local for judge reproducibility, low
 latency, no quota risk, and safety. Gemini is optional and disabled by default.
 
+## Live Deployment
+
+https://sust-codex-community-hackathon-preli.onrender.com
+
 ## Problem Statement Summary
 
 The hackathon API must expose:
